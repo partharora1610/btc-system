@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { config } from 'dotenv';
 
 const envSchema = z.object({
-  PORT: z.string(),
+  // PORT: z.string(),
 });
 
 export const parseEnv = (): void => {
