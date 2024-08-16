@@ -2,8 +2,71 @@ import Express, { Request, Response } from 'express';
 import { createServer, Server as HTTPServer } from 'http';
 import { WebSocket, WebSocketServer } from 'ws';
 import logger from '../middlewares/logger.middleware';
-import { Mempool } from 'mempoll/mempoll';
-import { Tx } from 'utils/Tx';
+import crypto from 'crypto';
+
+export class Tx {
+  public hash: string;
+  public inputs: { txid: string; index: number; amount: number }[];
+  public outputs: { address: string; amount: number }[];
+
+  constructor(inputs: { txid: string; index: number; amount: number }[], outputs: { address: string; amount: number }[]) {
+    this.inputs = inputs;
+    this.outputs = outputs;
+    this.hash = this.calculateHash();
+  }
+
+  private calculateHash(): string {
+    return crypto
+      .createHash('sha256')
+      .update(JSON.stringify(this.inputs) + JSON.stringify(this.outputs))
+      .digest('hex');
+  }
+
+  public getTxWeight(): number {
+    return JSON.stringify(this).length;
+  }
+
+  public getTxFee(): number {
+    const inputSum = this.inputs.reduce((sum, input) => sum + input.amount, 0);
+    const outputSum = this.outputs.reduce((sum, output) => sum + output.amount, 0);
+    return inputSum - outputSum;
+  }
+}
+
+interface Block {
+  index: number;
+  timestamp: number;
+  transactions: Tx[];
+  previousHash: string;
+  hash: string;
+  nonce: number;
+}
+
+class Mempool {
+  private static instance: Mempool;
+  private transactions: Tx[] = [];
+
+  private constructor() {}
+
+  public static getInstance(): Mempool {
+    if (!Mempool.instance) {
+      Mempool.instance = new Mempool();
+    }
+    return Mempool.instance;
+  }
+
+  public addTransaction(tx: Tx) {
+    this.transactions.push(tx);
+  }
+
+  public removeTransaction(tx: Tx) {
+    this.transactions = this.transactions.filter((t) => t.hash !== tx.hash);
+  }
+
+  public getTransactions(limit?: number): Tx[] {
+    return limit ? this.transactions.slice(0, limit) : this.transactions;
+  }
+}
 
 const mempool = Mempool.getInstance();
 
@@ -60,7 +123,7 @@ function requestBlockchainForNewMiner(newMinerId: string, newMinerWs: WebSocket)
   const existingMiners = Array.from(miners.entries()).filter(([id, _]) => id !== newMinerId);
 
   if (existingMiners.length > 0) {
-    const [__, existingMinerWs] = existingMiners[Math.floor(Math.random() * existingMiners.length)];
+    const [_, existingMinerWs] = existingMiners[Math.floor(Math.random() * existingMiners.length)];
     existingMinerWs.send(
       JSON.stringify({
         type: 'REQUEST_BLOCKCHAIN_SHARE',
@@ -72,9 +135,8 @@ function requestBlockchainForNewMiner(newMinerId: string, newMinerWs: WebSocket)
   }
 }
 
-function forwardBlockchainToNewMiner(targetMinerId: string, blockchain: any) {
+function forwardBlockchainToNewMiner(targetMinerId: string, blockchain: Block[]) {
   const targetMinerWs = miners.get(targetMinerId);
-
   if (targetMinerWs) {
     targetMinerWs.send(
       JSON.stringify({
@@ -102,8 +164,8 @@ expressApp.get('/', (_: Request, res: Response) => {
 });
 
 expressApp.post('/transaction', (req: Request, res: Response) => {
-  const { from, to, amount, fee } = req.body;
-  const transaction = new Tx(from, to, amount, fee);
+  const { inputs, outputs } = req.body;
+  const transaction = new Tx(inputs, outputs);
   console.log('Received new transaction');
   mempool.addTransaction(transaction);
   broadcastToMiners({ type: 'NEW_TRANSACTION', transaction });
